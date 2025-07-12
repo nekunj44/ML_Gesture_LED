@@ -4,7 +4,7 @@
 Control a series of colorful LED patterns using just your hand gestures!
 This project combines **MediaPipe (hand detection)**, **OpenCV**, and an **Arduino Uno** to create a responsive and fun real-time interaction system.
 
-![Gesture Demo](https://user-images.githubusercontent.com/your-image-url.gif) <!-- Replace with your demo GIF or photo -->
+![Wiring](./clicked_ck_photo.jpg) 
 
 ---
 
@@ -103,13 +103,8 @@ The system will auto-detect your Arduino’s COM port and start tracking your ha
 * Connect cathodes (short leg) of all LEDs to **GND**
 * Upload the `led_patterns.ino` file from this repo using the Arduino IDE
 
----
-
-## 📸 Demo
-
-> 🔽 Add a short demo GIF or YouTube video link here showing the gesture-to-pattern flow
-> Example:
-> ![Demo](https://your-demo-link.gif)
+# Connection
+![Wiring](./circuit_image.png) 
 
 ---
 
