@@ -1,62 +1,126 @@
+"""
+Gesture‑to‑LED controller
+------------------------
+Requires:
+    pip install opencv-python mediapipe pyserial
+Make sure your Arduino sketch is running and listening at 9600 baud.
+"""
+
+import time
 import cv2
 import mediapipe as mp
 import serial
-import time
+import serial.tools.list_ports
 
-# Connect to Arduino on COM port
-arduino = serial.Serial('COM13', 9600)  # Change COM3 to your Arduino port
-time.sleep(2)  # Wait for Arduino to reset
+# ========= Serial helpers ========= #
+def find_arduino_port():
+    """Return the first serial port that looks like an Arduino."""
+    for p in serial.tools.list_ports.comports():
+        if ("Arduino" in p.description) or ("CH340" in p.description) or ("USB‑SERIAL" in p.description):
+            return p.device           # e.g. 'COM4' on Windows or '/dev/ttyACM0' on Linux
+    raise IOError("🔌  No Arduino found – is it plugged in and the driver installed?")
 
-# MediaPipe setup
-mpHands = mp.solutions.hands
-hands = mpHands.Hands(max_num_hands=1)
-mpDraw = mp.solutions.drawing_utils
+# Pick a port automatically (or hard‑code e.g. 'COM13')
+PORT = 'COM15'
+BAUD = 9600
 
-cap = cv2.VideoCapture(0)
+print(f"🔗  Connecting to Arduino on {PORT} @ {BAUD} baud …")
+arduino = serial.Serial(PORT, BAUD, timeout=1)
+time.sleep(2)        # give the Arduino time to reset
+print("✅  Serial link established.")
 
-def count_fingers(hand_landmarks):
-    tips = [4, 8, 12, 16, 20]
+# ========= MediaPipe setup ========= #
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(
+    static_image_mode=False,
+    max_num_hands=1,
+    min_detection_confidence=0.7,
+    min_tracking_confidence=0.7,
+)
+mp_draw = mp.solutions.drawing_utils
+
+# Indices of fingertips in MediaPipe model
+FINGERTIP_IDS = [4, 8, 12, 16, 20]
+
+# Utility for finger counting
+def count_raised_fingers(hand_landmarks):
+    """Return how many fingers are up (0‑5) for a right hand."""
+    lm = hand_landmarks.landmark
     fingers = []
 
-    # Thumb
-    if hand_landmarks.landmark[tips[0]].x < hand_landmarks.landmark[tips[0] - 1].x:
-        fingers.append(1)
-    else:
-        fingers.append(0)
+    # Thumb (compare x positions instead of y)
+    fingers.append(1 if lm[FINGERTIP_IDS[0]].x < lm[FINGERTIP_IDS[0] - 1].x else 0)
 
-    # Other fingers
-    for tip in tips[1:]:
-        if hand_landmarks.landmark[tip].y < hand_landmarks.landmark[tip - 2].y:
-            fingers.append(1)
-        else:
-            fingers.append(0)
+    # 4 other fingers (compare y to knuckle two indices below)
+    for tip_id in FINGERTIP_IDS[1:]:
+        fingers.append(1 if lm[tip_id].y < lm[tip_id - 2].y else 0)
 
     return sum(fingers)
 
-while True:
-    success, img = cap.read()
-    imgRGB = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    results = hands.process(imgRGB)
+# ========= Video capture loop ========= #
+cap = cv2.VideoCapture(0)
+if not cap.isOpened():
+    raise IOError("❌  Cannot open webcam")
 
-    if results.multi_hand_landmarks:
-        for handLms in results.multi_hand_landmarks:
-            mpDraw.draw_landmarks(img, handLms, mpHands.HAND_CONNECTIONS)
-            finger_count = count_fingers(handLms)
+last_command = None        # remember last code sent so we don’t spam serial
 
-            # Send corresponding gesture code
-            if finger_count == 5:
-                arduino.write(b'1')  # Open palm
-            elif finger_count == 0:
-                arduino.write(b'2')  # Fist
-            elif finger_count == 1:
-                arduino.write(b'3')  # One finger
-            elif finger_count == 2:
-                arduino.write(b'4')  # Two fingers
+def send_command(code_byte):
+    global last_command
+    if code_byte != last_command:
+        arduino.write(code_byte)
+        last_command = code_byte
+        print(f"➡️  Sent command {code_byte} to Arduino")
 
-    cv2.imshow("Gesture Control", img)
-    if cv2.waitKey(1) & 0xFF == ord('q'):
-        break
+print("\n🤚  Show a gesture to your webcam:")
+print("     5 fingers → Pattern 1  (Chaser)")
+print("     0 fingers → Pattern 2  (All Blink)")
+print("     1 finger  → Pattern 3  (Bounce)")
+print("     2 fingers → Pattern 4  (Odd/Even Blink)")
+print("Press  q  to quit.\n")
 
-cap.release()
-cv2.destroyAllWindows()
-arduino.close()
+try:
+    while True:
+        success, frame = cap.read()
+        if not success:
+            break
+
+        frame = cv2.flip(frame, 1)                      # mirror for natural interaction
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = hands.process(rgb)
+
+        gesture_label = "None"
+
+        if result.multi_hand_landmarks:
+            for hand_lms in result.multi_hand_landmarks:
+                count = count_raised_fingers(hand_lms)
+                # Map counts to commands
+                if count == 5:
+                    send_command(b'1'); gesture_label = "Open‑Palm (5)"
+                elif count == 0:
+                    send_command(b'2'); gesture_label = "Fist (0)"
+                elif count == 1:
+                    send_command(b'3'); gesture_label = "One Finger (1)"
+                elif count == 2:
+                    send_command(b'4'); gesture_label = "Two Fingers (2)"
+                else:
+                    # For counts 3 or 4 we don't send anything
+                    last_command = None
+                    gesture_label = f"{count} fingers (no cmd)"
+
+                mp_draw.draw_landmarks(frame, hand_lms, mp_hands.HAND_CONNECTIONS)
+
+        # Display the current gesture
+        cv2.putText(frame, f"Gesture: {gesture_label}", (10, 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+
+        cv2.imshow("Gesture → LED Control", frame)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+finally:
+    # Clean up
+    cap.release()
+    hands.close()
+    arduino.close()
+    cv2.destroyAllWindows()
+    print("👋  Goodbye!")
